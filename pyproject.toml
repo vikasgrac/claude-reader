@@ -1,6 +1,6 @@
 [project]
 name = "claude-reader"
-version = "0.1.0"
+version = "0.2.0"
 description = "A live reading pane for Claude Code sessions: only the text Claude writes to you, in any terminal"
 readme = "README.md"
 license = "MIT"
@@ -15,7 +15,10 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Utilities",
 ]
-dependencies = ["textual>=0.80"]
+dependencies = ["textual>=0.80,<9"]
+
+[project.optional-dependencies]
+test = ["pytest", "pytest-asyncio"]
 
 [project.urls]
 Homepage = "https://github.com/vikasgrac/claude-reader"

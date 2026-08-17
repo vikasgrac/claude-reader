@@ -2,7 +2,7 @@
 
 A live reading pane for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions. It shows only the text Claude writes *to you*, stripped of tool calls, bash output and diffs, with a sidebar to jump back to any earlier message.
 
-Works in any terminal, next to any Claude Code session, with no plugins and no changes to Claude Code itself.
+Works in any terminal, next to any Claude Code session, with no plugins and no changes to Claude Code itself. (Independent project, not affiliated with Anthropic.)
 
 ```
 ┌────────────────────────────────┬───────────────────────────────────────────────┐
@@ -45,11 +45,11 @@ Or run without installing:
 uvx --from git+https://github.com/vikasgrac/claude-reader claude-reader
 ```
 
-Requires Python 3.10+. The only dependency is [Textual](https://textual.textualize.io/).
+Requires Python 3.10+ on Linux/macOS (or WSL). The only dependency is [Textual](https://textual.textualize.io/). Tests: `pip install -e . pytest pytest-asyncio && python -m pytest`.
 
 ## Use
 
-Open a second pane next to your Claude Code session. Any pane works: a tmux split, your terminal's native split (Ghostty, Kitty, iTerm2, Warp, Windows Terminal), or a second window. Then, **from the same directory the Claude session was started in**, run:
+Open a second pane next to your Claude Code session. Any pane works: a tmux split, your terminal's native split (Ghostty, Kitty, iTerm2, Warp, Windows Terminal hosting WSL or an ssh session), or a second window. Then, **from the same directory the Claude session was started in**, run:
 
 ```
 claude-reader
@@ -77,17 +77,36 @@ Options:
 claude-reader path/to/transcript.jsonl   # open a specific transcript
 claude-reader --no-pick                  # skip the startup session picker
 claude-reader --mouse                    # enable in-app mouse (see below)
+claude-reader --max-messages 200         # keep only the newest N messages (default 500)
 ```
+
+Unknown options and extra arguments are usage errors (exit 2); a transcript that cannot be
+opened is reported on stderr (exit 1). Only the newest `--max-messages` messages are kept
+in memory and shown in the sidebar, so a very long transcript opens fast and stays cheap.
+
+## Two-minute tour
+
+1. Start Claude Code in a project as usual: `cd ~/work/myapp && claude`.
+2. Split your terminal (tmux: `prefix %`; or a second tab/window) and in the new pane run:
+   ```
+   cd ~/work/myapp && claude-reader
+   ```
+   The sidebar fills with the conversation so far, newest at the bottom, and the reading pane shows the latest message rendered as markdown.
+3. Ask Claude something long — a code review, a plan. While it works, the tool calls scroll by in the Claude pane; in the reader nothing moves until Claude writes prose, and then that message appears, formatted, with headings, lists and code blocks intact.
+4. Press `k` a few times to walk back through earlier messages. Auto-follow pauses while you read; press `f` to jump back to the newest and resume following.
+5. Press `u` to hide your own prompts and see only Claude's side, `s` to hide the sidebar and read full width, `c` to copy the current message to your clipboard for a note or a commit message.
+6. Ran several sessions in this project today? `p` opens the session picker; the live ones are marked. Pick one and the reader switches to it.
+7. `q` quits. Claude Code never noticed any of this — the reader only ever read a file.
 
 ## How it works
 
-Claude Code logs every session to `~/.claude/projects/<project>/<session-id>.jsonl`, one JSON object per line, append-only. Each assistant turn is a list of typed blocks: `text`, `tool_use`, `thinking`. claude-reader keeps only the `text` blocks (plus your prompts, with injected system context stripped), which is exactly the separation you want. It remembers its byte offset into the file and re-reads whatever was appended, twice a second, so it stays live with no hooks into Claude Code or the terminal.
+Claude Code logs every session to `~/.claude/projects/<project>/<session-id>.jsonl`, one JSON object per line, normally appended to. Each assistant turn is a list of typed blocks: `text`, `tool_use`, `thinking`. claude-reader keeps only the `text` blocks (plus your prompts, with injected system context stripped), which is exactly the separation you want. It remembers its byte offset into the file and re-reads whatever was appended, twice a second, so it stays live with no hooks into Claude Code or the terminal. If the file is truncated or replaced (it tracks size and inode) it starts over and reloads; records it does not understand — nulls, new record types, a half-written last line, stray bytes — are skipped, never fatal.
 
 Because it only reads a file, it is not tied to any terminal app, works over ssh, and does not break when Claude Code's UI changes.
 
 ## Notes for tmux and ssh users
 
-**Clipboard.** `c` copies through `tmux load-buffer -w` when running inside tmux, which forwards to the outer terminal's clipboard via OSC 52. This works over ssh if your terminal supports OSC 52 (most do). Outside tmux it uses Textual's clipboard support.
+**Clipboard.** `c` copies through `tmux load-buffer -w` when running inside tmux, which forwards to the outer terminal's clipboard via OSC 52 (a temporary named tmux buffer is used and deleted right after, so the text does not linger in tmux's paste history). This works over ssh if your terminal supports OSC 52 (most do). Outside tmux it uses Textual's clipboard support. Copying is the only time text leaves the app: it reads transcripts locally and makes no network calls.
 
 **Selecting text in the Claude pane.** Two things in a neighbouring TUI can break drag-selection in the Claude Code pane, and claude-reader avoids both by default:
 
@@ -96,7 +115,7 @@ Because it only reads a file, it is not tied to any terminal app, works over ssh
 
 ## Status
 
-Iteration 1, built and used the same day. Things it does not do yet: search, a compressed trace of tool activity between messages, a `claude-watch` wrapper that opens Claude and the reader in one tmux command. Issues and PRs welcome.
+0.2.0 — used daily since day one, hardened after an outside review: malformed or half-written transcript lines are skipped, truncated/replaced files reload, memory is bounded (`--max-messages`), and there is a test suite. Things it does not do yet: search, a compressed trace of tool activity between messages, a `claude-watch` wrapper that opens Claude and the reader in one tmux command. Issues and PRs welcome.
 
 ## License
 
