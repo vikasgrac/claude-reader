@@ -34,16 +34,18 @@ claude-reader fixes that by tailing the session transcript that Claude Code alre
 With [pipx](https://pipx.pypa.io/) or [uv](https://docs.astral.sh/uv/):
 
 ```
-pipx install git+https://github.com/vikasgrac/claude-reader
+pipx install claude-reader
 # or
-uv tool install git+https://github.com/vikasgrac/claude-reader
+uv tool install claude-reader
 ```
 
 Or run without installing:
 
 ```
-uvx --from git+https://github.com/vikasgrac/claude-reader claude-reader
+uvx claude-reader
 ```
+
+(From source: `pipx install git+https://github.com/vikasgrac/claude-reader`.)
 
 Requires Python 3.10+ on Linux/macOS (or WSL). The only dependency is [Textual](https://textual.textualize.io/). Tests: `pip install -e . pytest pytest-asyncio && python -m pytest`.
 
