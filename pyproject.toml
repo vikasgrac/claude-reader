@@ -1,6 +1,6 @@
 [project]
 name = "claude-reader"
-version = "0.2.0"
+version = "0.3.0"
 description = "A live reading pane for Claude Code sessions: only the text Claude writes to you, in any terminal"
 readme = "README.md"
 license = "MIT"

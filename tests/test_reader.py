@@ -144,3 +144,119 @@ def test_main_exit_codes(tmp_path):
     assert r.returncode == 2 and b"usage" in r.stderr
     r = subprocess.run([sys.executable, "-m", "claude_reader", str(tmp_path / "missing.jsonl")], capture_output=True, env=env, cwd=str(Path(__file__).resolve().parents[1]))
     assert r.returncode == 1 and b"transcript not found" in r.stderr
+
+
+# ---- search -------------------------------------------------------------------
+
+def usr(text):                        # `a()` above is the assistant counterpart
+    return rec(type="user", message={"content": text}) + "\n"
+
+
+def test_search_transcript_matches_case_insensitively_by_default(tmp_path):
+    from claude_reader import compile_query, search_transcript
+    p = tmp_path / "s.jsonl"
+    p.write_text(a("The Needle is here") + a("nothing") + usr("needle again"))
+    hits = search_transcript(p, compile_query("needle"))
+    assert [h.message.role for h in hits] == ["assistant", "user"]
+    assert hits[0].span == (4, 10)
+    assert search_transcript(p, compile_query("needle", case_sensitive=True))[0].message.role == "user"
+
+
+def test_search_transcript_honours_roles_limit_and_regex(tmp_path):
+    from claude_reader import compile_query, search_transcript
+    p = tmp_path / "s.jsonl"
+    p.write_text(a("x1") + usr("x2") + a("x3"))
+    assert len(search_transcript(p, compile_query(r"x\d", regex=True))) == 3
+    assert len(search_transcript(p, compile_query("x"), roles={"user"})) == 1
+    assert len(search_transcript(p, compile_query("x"), limit=2)) == 2
+    assert search_transcript(p, compile_query(r"x\d")) == []          # not a regex unless asked
+
+
+def test_search_transcript_survives_junk_and_missing_files(tmp_path):
+    from claude_reader import compile_query, search_transcript
+    p = tmp_path / "s.jsonl"
+    p.write_text("garbage\n\n" + '{"type":"assistant","message":null}\n' + a("needle"))
+    assert len(search_transcript(p, compile_query("needle"))) == 1
+    assert search_transcript(tmp_path / "gone.jsonl", compile_query("needle")) == []
+
+
+@pytest.mark.parametrize("query,parsed_only", [
+    ("plain text", False), ("it's", False), ("~/.claude", False),
+    ('has "quote"', True), ("back\\slash", True), ("café", True), ("multi\nline", True),
+])
+def test_prefilter_only_used_for_queries_json_cannot_escape(query, parsed_only):
+    from claude_reader import make_prefilter
+    assert (make_prefilter(query) is None) is parsed_only
+    assert make_prefilter(query, regex=True) is None
+
+
+def test_prefilter_agrees_with_parsing_everything(tmp_path):
+    """The fast path must never lose a match the slow path would find."""
+    from claude_reader import compile_query, make_prefilter, search_transcript
+    p = tmp_path / "s.jsonl"
+    p.write_text(a("it's a hit") + a("IT'S shouting") + a("no match here") + a("tab\there"))
+    for q in ["it's", "IT'S", "hit", "tab"]:
+        pat = compile_query(q)
+        assert search_transcript(p, pat, prefilter=make_prefilter(q)) == search_transcript(p, pat)
+
+
+def test_excerpt_trims_and_marks_the_match():
+    from claude_reader import excerpt
+    lead, mid, tail = excerpt("hello " * 40 + "NEEDLE" + " world" * 40, (240, 246))
+    assert mid == "NEEDLE"
+    assert lead.startswith("…") and tail.endswith("…")
+    assert len(lead) + len(mid) + len(tail) <= 100
+    # short text: no ellipses, newlines collapsed
+    assert excerpt("a\n\nNEEDLE\nb", (3, 9)) == ("a ", "NEEDLE", " b")
+
+
+def test_run_search_reports_sessions_and_exit_codes(tmp_path, monkeypatch, capsys):
+    import claude_reader
+    proj = tmp_path / "projects" / "-home-me-thing"
+    proj.mkdir(parents=True)
+    (proj / "aaaaaaaa-1111-2222-3333-444444444444.jsonl").write_text(
+        json.dumps({"type": "assistant", "cwd": "/home/me/thing",
+                    "message": {"content": [{"type": "text", "text": "the needle"}]}}) + "\n")
+    (proj / "bbbbbbbb-1111-2222-3333-444444444444.jsonl").write_text(a("unrelated"))
+    (proj / "agent-cccccccc.jsonl").write_text(a("needle in a subagent"))   # not a session
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(claude_reader, "config_roots", lambda: [tmp_path])
+
+    assert claude_reader.run_search("needle", all_projects=True) == 0
+    out = capsys.readouterr().out
+    assert "/home/me/thing" in out                              # real cwd, not the munged dir name
+    assert "aaaaaaaa-1111-2222-3333-444444444444" in out
+    assert "bbbbbbbb" not in out and "agent-" not in out
+    assert "1 match in 1 session across 1 project" in out
+
+    assert claude_reader.run_search("absent", all_projects=True) == 1
+    assert "no messages matching" in capsys.readouterr().out
+    assert claude_reader.run_search("(unclosed", all_projects=True, regex=True) == 2
+
+
+def test_resolve_session_id(tmp_path, monkeypatch):
+    import claude_reader
+    from claude_reader import StartupError, resolve_session_id
+    for name in ["aaaaaaaa-1111.jsonl", "aaaaaaaa-2222.jsonl", "bbbbbbbb-1111.jsonl"]:
+        d = tmp_path / "projects" / "-p"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).write_text(a("hi"))
+    monkeypatch.setattr(claude_reader, "config_roots", lambda: [tmp_path])
+    assert resolve_session_id("bbbbbbbb-1111").name == "bbbbbbbb-1111.jsonl"
+    assert resolve_session_id("bbbb").name == "bbbbbbbb-1111.jsonl"          # unique prefix
+    with pytest.raises(StartupError, match="ambiguous"):
+        resolve_session_id("aaaa")
+    with pytest.raises(StartupError, match="no session id"):
+        resolve_session_id("dddd")
+
+
+def test_find_transcript_accepts_a_session_id(tmp_path, monkeypatch):
+    import claude_reader
+    from claude_reader import find_transcript
+    d = tmp_path / "projects" / "-p"
+    d.mkdir(parents=True)
+    (d / "eeeeeeee-1111.jsonl").write_text(a("hi"))
+    monkeypatch.setattr(claude_reader, "config_roots", lambda: [tmp_path])
+    assert find_transcript("eeeeeeee-1111")[0] == d / "eeeeeeee-1111.jsonl"
+    with pytest.raises(claude_reader.StartupError, match="not found"):
+        find_transcript("./not/a/session")      # looks like a path: reported as a path
