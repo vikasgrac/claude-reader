@@ -260,3 +260,33 @@ def test_find_transcript_accepts_a_session_id(tmp_path, monkeypatch):
     assert find_transcript("eeeeeeee-1111")[0] == d / "eeeeeeee-1111.jsonl"
     with pytest.raises(claude_reader.StartupError, match="not found"):
         find_transcript("./not/a/session")      # looks like a path: reported as a path
+
+
+def test_run_search_groups_a_project_split_across_config_roots(tmp_path, monkeypatch, capsys):
+    """The same project has its own transcript dir under every config root (the default
+    account and each profile). That is one project, not one per root."""
+    import claude_reader
+    munged = "-home-me-thing"
+    for root, session, text in [("default", "aaaaaaaa-1111", "needle one"),
+                                ("profile", "bbbbbbbb-2222", "needle two"),
+                                ("default", "cccccccc-3333", "needle three")]:
+        d = tmp_path / root / "projects" / munged
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{session}.jsonl").write_text(
+            json.dumps({"type": "assistant", "cwd": "/home/me/thing",
+                        "message": {"content": [{"type": "text", "text": text}]}}) + "\n")
+    other = tmp_path / "default" / "projects" / "-home-me-other"
+    other.mkdir(parents=True)
+    (other / "dddddddd-4444.jsonl").write_text(
+        json.dumps({"type": "assistant", "cwd": "/home/me/other",
+                    "message": {"content": [{"type": "text", "text": "needle four"}]}}) + "\n")
+    monkeypatch.setattr(claude_reader, "config_roots",
+                        lambda: [tmp_path / "default", tmp_path / "profile"])
+
+    assert claude_reader.run_search("needle", all_projects=True) == 0
+    out = capsys.readouterr().out
+    assert out.count("/home/me/thing") == 1          # one header, not one per config root
+    assert out.count("/home/me/other") == 1
+    for session in ["aaaaaaaa-1111", "bbbbbbbb-2222", "cccccccc-3333", "dddddddd-4444"]:
+        assert session in out
+    assert "4 matches in 4 sessions across 2 projects" in out

@@ -1013,6 +1013,20 @@ class ReaderApp(App):
 ROLE_WORD = {"user": "you", "assistant": "claude"}
 
 
+@dataclass
+class SessionMatch:
+    """What one matching session contributes to the report."""
+    project: str          # the directory the session ran in, not the config root it lives under
+    path: Path
+    mtime: float
+    count: int            # total matches, even when only some are previewed
+    previews: list[Hit]
+
+    @property
+    def when(self) -> str:
+        return datetime.fromtimestamp(self.mtime).strftime("%Y-%m-%d %H:%M")
+
+
 class Ink:
     """ANSI styling, switched off for pipes, dumb terminals and NO_COLOR."""
 
@@ -1084,46 +1098,56 @@ def run_search(query: str, all_projects: bool, regex: bool = False, case_sensiti
     if len(transcripts) > 50 and color_enabled(err):
         print(f"searching {len(transcripts)} transcripts…", file=err, flush=True)
 
-    ink = Ink(color_enabled(out))
-    total_hits = total_sessions = 0
-    printed_projects: set[Path] = set()
+    found: list[SessionMatch] = []
     truncated = False
     for project_dir, path, mtime in transcripts:
         hits = search_transcript(path, pattern, roles, prefilter=prefilter)
         if not hits:
             continue
-        if max_sessions and total_sessions >= max_sessions:
+        if max_sessions and len(found) >= max_sessions:
             truncated = True
             break
-        total_sessions += 1
-        total_hits += len(hits)
-        if project_dir not in printed_projects:
-            printed_projects.add(project_dir)
-            print(("\n" if len(printed_projects) > 1 else "") + ink.head(project_cwd(project_dir)), file=out)
-        prof = profile_label(path)
-        meta = f"{len(hits)} match{'es' if len(hits) != 1 else ''}"
-        if prof and prof != "default":
-            meta += f" · {prof}"
-        when = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
-        print(f"  {ink.bold(path.stem)}  {session_title(path)}", file=out)
-        print(f"    {ink.dim(f'{meta} · last active {when}')}", file=out)
-        for hit in hits[:per_session] if per_session else hits:
-            lead, mid, tail = excerpt(hit.message.text, hit.span)
-            who = ROLE_WORD.get(hit.message.role, hit.message.role)
-            stamp = f"{who:>6} {hit.message.timestamp or '--:--:--'}"
-            print(f"      {ink.dim(stamp)}  {lead}{ink.mark(mid)}{tail}", file=out)
-        if per_session and len(hits) > per_session:
-            print(f"      {ink.dim(f'… {len(hits) - per_session} more in this session')}", file=out)
-        print(f"      {ink.dim('open:')} claude-reader {path.stem}", file=out)
+        found.append(SessionMatch(project_cwd(project_dir), path, mtime, len(hits),
+                                  hits[:per_session] if per_session else hits))
 
-    if not total_hits:
+    if not found:
         scope = "any project" if all_projects else "this project"
         print(f"no messages matching {query!r} in {scope}", file=out)
         return 1
-    where = f"{len(printed_projects)} project{'s' if len(printed_projects) != 1 else ''}"
-    tail = " (stopped early: --max-sessions)" if truncated else ""
+
+    # Group by the directory the sessions ran in, not by the directory they are stored
+    # in: the same project has a separate transcript dir under every config root, so
+    # running it under a profile as well as the default account must not read as two
+    # projects. `transcripts` is newest first, so both the projects and the sessions
+    # inside each one come out in most-recently-active order.
+    groups: dict[str, list[SessionMatch]] = {}
+    for match in found:
+        groups.setdefault(match.project, []).append(match)
+
+    ink = Ink(color_enabled(out))
+    for n, (project, matches) in enumerate(groups.items()):
+        print(("\n" if n else "") + ink.head(project), file=out)
+        for m in matches:
+            prof = profile_label(m.path)
+            meta = f"{m.count} match{'es' if m.count != 1 else ''}"
+            if prof and prof != "default":
+                meta += f" · {prof}"
+            print(f"  {ink.bold(m.path.stem)}  {session_title(m.path)}", file=out)
+            print(f"    {ink.dim(f'{meta} · last active {m.when}')}", file=out)
+            for hit in m.previews:
+                lead, mid, tail = excerpt(hit.message.text, hit.span)
+                who = ROLE_WORD.get(hit.message.role, hit.message.role)
+                stamp = f"{who:>6} {hit.message.timestamp or '--:--:--'}"
+                print(f"      {ink.dim(stamp)}  {lead}{ink.mark(mid)}{tail}", file=out)
+            if m.count > len(m.previews):
+                print(f"      {ink.dim(f'… {m.count - len(m.previews)} more in this session')}", file=out)
+            print(f"      {ink.dim('open:')} claude-reader {m.path.stem}", file=out)
+
+    total_hits = sum(m.count for m in found)
+    stopped = " (stopped early: --max-sessions)" if truncated else ""
     print(f"\n{total_hits} match{'es' if total_hits != 1 else ''} in "
-          f"{total_sessions} session{'s' if total_sessions != 1 else ''} across {where}{tail}", file=out)
+          f"{len(found)} session{'s' if len(found) != 1 else ''} across "
+          f"{len(groups)} project{'s' if len(groups) != 1 else ''}{stopped}", file=out)
     return 0
 
 
